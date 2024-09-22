@@ -1,0 +1,32 @@
+buildscript {
+    repositories {
+        gradlePluginPortal()
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+apply plugin: 'java'
+apply plugin: 'java-library'
+
+group = project.maven_group
+version = project.version
+
+dependencies {
+    compileOnly 'org.jetbrains:annotations:24.1.0'
+}
+
+java {
+    withJavadocJar()
+    withSourcesJar()
+}
+
+tasks.withType(Jar) {
+    archiveBaseName.set("ara")
+}
+
+compileJava {}
+
+javadoc {}
