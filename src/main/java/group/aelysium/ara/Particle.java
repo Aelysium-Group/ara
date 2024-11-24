@@ -3,11 +3,10 @@ package group.aelysium.ara;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.NoSuchElementException;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Particles are the backbone of the Absolute Redundancy Architecture.
@@ -20,7 +19,26 @@ public interface Particle extends Closure {
      * @param <P> The Particle type that will be launched via this Tinder.
      */
     abstract class Tinder<P extends Particle> {
+        private final Map<String, Object> metadata = new HashMap<>();
+
         protected Tinder() {}
+
+        /**
+         * Adds the metadata to the tinder.
+         * Once a tinder is created from the flux, this metadata will be passed to the flux and be available for reading.
+         * @param key The key to store.
+         * @param value The value to store.
+         * @return `true` if the value could be stored. `false` if the specified key already exists.
+         */
+        public boolean metadata(String key, String value) {
+            if(this.metadata.containsKey(key)) return false;
+            this.metadata.put(key, value);
+            return true;
+        }
+
+        protected Map<String, Object> metadata() {
+            return Collections.unmodifiableMap(this.metadata);
+        }
 
         /**
          * @return A new Flux containing the tinder.
@@ -40,17 +58,61 @@ public interface Particle extends Closure {
     }
 
     /**
-     * All microservices exist in a state of flux.
-     * {@link Particle.Flux} exists to manage this state.
+     * Flux exist to abstract away the Particle instance from the rest of your code.
+     * This allows particles to exist in super-position, where they can start, stop, and reboot at will.
      * @param <P> The underlying Particle that exists within this flux.
      */
     class Flux<P extends Particle> implements Closure {
         private static final ExecutorService executor = Executors.newCachedThreadPool();
+        private @Nullable List<Consumer<P>> onStart = null;
+        private @Nullable List<Runnable> onClose = null;
         private @Nullable CompletableFuture<P> resolvable = null;
         private @NotNull Tinder<P> tinder;
 
         protected Flux(@NotNull Tinder<P> tinder) {
             this.tinder = tinder;
+        }
+
+        /**
+         * Gets a metadata value from this flux.
+         * Metadata may change if the tinder backing this flux changes as well.
+         * @param key The key to search for.
+         * @return The value associated with the key.
+         * @param <T> The type that the value should be cast to.
+         * @throws ClassCastException If the type of the value doesn't match the type being enforced by the generic.
+         */
+        public <T> @Nullable T metadata(String key) throws ClassCastException {
+            return (T) this.tinder.metadata().get(key);
+        }
+
+        /**
+         * Returns the full collection of metadata.
+         * The returned map is immutable.
+         * @return A map containing all metadata for the flux.
+         */
+        public @NotNull Map<String, Object> metadata() {
+            return Collections.unmodifiableMap(this.tinder.metadata());
+        }
+
+        private void handleStart(P particle) {
+            if(this.onStart == null) return;
+            this.onStart.forEach(c -> {
+                try {
+                    c.accept(particle);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+        private void handleClose() {
+            if(this.onClose == null) return;
+            this.onClose.forEach(r -> {
+                try {
+                    r.run();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
         }
 
         /**
@@ -63,6 +125,11 @@ public interface Particle extends Closure {
             executor.submit(() -> {
                 try {
                     P p = tinder.ignite();
+
+                    try {
+                        this.handleStart(p);
+                    } catch (Exception ignore) {}
+
                     future.complete(p);
                 } catch (Exception e) {
                     future.completeExceptionally(e);
@@ -87,7 +154,7 @@ public interface Particle extends Closure {
             if(this.resolvable != null) {
                 P particle = this.resolvable.getNow(null);
                 if(particle == null) this.resolvable.cancel(true);
-                else particle.close();
+                else this.close();
             }
 
             this.resolvable = this.ignite(tinder);
@@ -105,6 +172,18 @@ public interface Particle extends Closure {
             return this.resolvable;
         }
 
+        public CompletableFuture<P> reignite(@NotNull Tinder<P> tinder) throws Exception {
+            return this.reignite(tinder, false);
+        }
+
+        public CompletableFuture<P> reignite(boolean rollback) throws Exception {
+            return this.reignite(this.tinder, rollback);
+        }
+
+        public CompletableFuture<P> reignite() throws Exception {
+            return this.reignite(false);
+        }
+
         /**
          * Returns the underlying Particle is it exists, or throws an exception if it doesn't.
          * @return The underlying Particle.
@@ -113,6 +192,17 @@ public interface Particle extends Closure {
         public P orElseThrow() throws NoSuchElementException {
             P p = this.access().getNow(null);
             if(p == null) throw new NoSuchElementException();
+            return p;
+        }
+
+        /**
+         * Returns the underlying Particle is it exists, or throws an exception if it doesn't.
+         * @return The underlying Particle.
+         * @throws NoSuchElementException If no Particle exists.
+         */
+        public <E extends Throwable> P orElseThrow(Supplier<E> exceptionResolver) throws E {
+            P p = this.access().getNow(null);
+            if(p == null) throw exceptionResolver.get();
             return p;
         }
 
@@ -277,7 +367,31 @@ public interface Particle extends Closure {
          */
         public boolean exists() {
             if(this.resolvable == null) return false;
-            return this.resolvable.isDone() && !this.resolvable.isCancelled() && !this.resolvable.isCompletedExceptionally();
+            if(this.resolvable.isCancelled()) return false;
+            if(this.resolvable.isCompletedExceptionally()) return false;
+            return this.resolvable.isDone();
+        }
+
+        /**
+         * Runs the specified consumer when a new instance of the particle is created.
+         * If a particle already exists, this method will run instantly.
+         * @param consumer The consumer to run.
+         */
+        public void onStart(@NotNull Consumer<P> consumer) {
+            if(this.onStart == null) this.onStart = new ArrayList<>();
+            this.onStart.add(consumer);
+            if(this.exists()) consumer.accept(this.orElseThrow());
+        }
+
+        /**
+         * Runs the specified runnable when the particle closes.
+         * If the particle is already closed, this method will run instantly.
+         * @param runnable The runnable to execute when the particle closes.
+         */
+        public void onClose(@NotNull Runnable runnable) {
+            if(this.onClose == null) this.onClose = new ArrayList<>();
+            this.onClose.add(runnable);
+            if(!this.exists()) runnable.run();
         }
 
         /**
@@ -293,9 +407,10 @@ public interface Particle extends Closure {
             if(this.resolvable.isDone())
                 try {
                     this.resolvable.get().close();
-                    return;
                 } catch (Exception ignore) {}
-            this.resolvable.completeExceptionally(new InterruptedException("Particle boot was interrupted by Hypervisor closing!"));
+            else this.resolvable.completeExceptionally(new InterruptedException("Particle boot was interrupted by its Flux closing!"));
+            this.resolvable = null;
+            this.handleClose();
         }
 
         /**
