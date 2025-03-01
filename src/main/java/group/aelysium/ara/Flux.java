@@ -68,7 +68,7 @@ public class Flux<P extends Closure> implements Closure {
      * @param value The value to store.
      */
     public void metadata(String key, Object value) {
-        this.metadata().put(key, value);
+        this.metadata.put(key, value);
     }
     
     /**
@@ -80,7 +80,7 @@ public class Flux<P extends Closure> implements Closure {
      * @throws ClassCastException If the type of the value doesn't match the type being enforced by the generic.
      */
     public <T> @Nullable T metadata(String key) throws ClassCastException {
-        return (T) this.metadata().get(key);
+        return (T) this.metadata.get(key);
     }
     
     /**
@@ -89,7 +89,7 @@ public class Flux<P extends Closure> implements Closure {
      * @return A map containing all metadata for the flux.
      */
     public @NotNull Map<String, Object> metadata() {
-        return Collections.unmodifiableMap(this.metadata());
+        return Collections.unmodifiableMap(this.metadata);
     }
     
     /**
