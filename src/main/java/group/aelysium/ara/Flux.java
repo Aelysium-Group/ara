@@ -301,6 +301,7 @@ public class Flux<P extends Closure> implements Closure {
                     future.getNow(null).close();
                 } catch (Exception ignore) {}
             else future.completeExceptionally(new InterruptedException("Particle boot was interrupted by its Flux closing!"));
+            this.resolvable.set(new CompletableFuture<>());
             this.handleClose();
         } catch (Exception ignore) {}
     }
